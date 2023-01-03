@@ -15,6 +15,9 @@ broadcast functionality.
 premix or postmix (i.e. must be a tx0 descendant). Optionally notifies the caller with mix progress
 if the `notify` parameter is supplied and set up to do so.
 
+Official Samourai partners can set their own partnership code by setting the `WPID` environment
+variable at compile time.
+
 ## Donations
 
 If you find this library useful, donations are greatly appreciated. Our donation address is
