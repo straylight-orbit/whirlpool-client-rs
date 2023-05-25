@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use bitcoin::util::psbt;
+use bitcoin::psbt;
 
 pub mod alt_id;
 pub mod codec;
@@ -65,11 +65,10 @@ pub trait Signer: std::fmt::Debug + Send {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-#[cfg(feature = "client")]
 pub use client::{start, start_blocking, Info, TorConfig, API};
 pub use mix::{Event, Params};
+use pool::PoolId;
 
-#[cfg(feature = "client")]
 pub mod client {
     //! Contains a Tor-only Whirlpool client. The client can be started in the current thread or a
     //! new thread can be spawned. In the case of latter, communication with the caller is done
@@ -141,6 +140,7 @@ pub mod client {
         pub fn tx0_data(&self, scode: Option<String>) -> Result<Vec<tx0::Tx0Data>, HttpError> {
             let request = tx0::Tx0Data::request(&self.endpoints, scode);
             let response = http_request(&self.agent, request)?;
+
             Ok(response.tx0_datas)
         }
 
@@ -148,15 +148,16 @@ pub mod client {
         pub fn tx0_push(
             &self,
             tx: &bitcoin::Transaction,
-            pool_id: String,
+            pool_id: &PoolId,
         ) -> Result<tx0::Tx0PushResponse, HttpError> {
-            let request = tx0::push_tx0_request(&self.endpoints, &tx, pool_id);
+            let request = tx0::push_tx0_request(&self.endpoints, tx, pool_id);
             http_request(&self.agent, request)
         }
 
         /// Fetches Tor Project's homepage and checks that the HTTP status equals 200. Useful for
         /// testing basic connectivity. Debug-only.
         #[cfg(debug_assertions)]
+        #[allow(clippy::result_large_err)]
         pub fn tor_check(&self, onion: bool) -> Result<(), ureq::Error> {
             let start_instant = std::time::Instant::now();
             let path = match onion {
@@ -190,13 +191,11 @@ pub mod client {
         ))
         .expect("format proxy URL properly");
 
-        let agent = ureq::builder()
+        ureq::builder()
             .proxy(proxy)
             .user_agent(UA_HTTP)
             .timeout_connect(request_timeout)
-            .build();
-
-        agent
+            .build()
     }
 
     /// Selects endpoints based on routing preference and Bitcoin network.
@@ -380,7 +379,7 @@ pub mod client {
             status: u16,
             body: String,
         },
-        Transport(ureq::Transport),
+        Transport(Box<ureq::Transport>),
         Io(std::io::Error),
     }
 
@@ -427,7 +426,7 @@ pub mod client {
                         must_stay,
                     },
                 },
-                Event::Success(txid) => Info::Success(txid.clone()),
+                Event::Success(txid) => Info::Success(*txid),
                 Event::Failure => Info::Failure,
             }
         }
@@ -531,7 +530,7 @@ pub mod client {
                     body: String::from_utf8_lossy(&buf).to_string(),
                 })
             }
-            Err(ureq::Error::Transport(error)) => Err(HttpError::Transport(error)),
+            Err(ureq::Error::Transport(error)) => Err(HttpError::Transport(Box::new(error))),
         }
     }
 

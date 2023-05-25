@@ -194,7 +194,7 @@ impl TryFrom<AlternateIdentityRequest> for Vec<u8> {
 
                 let request = Request {
                     inputs_hash,
-                    unblinded_signed_bordereau64: z85::encode(&unblinded_signature.0),
+                    unblinded_signed_bordereau64: z85::encode(unblinded_signature.0),
                     receive_address: destination.to_string(),
                     bordereau64: z85::encode(bordereau),
                 };

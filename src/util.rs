@@ -22,7 +22,7 @@ pub mod hashes {
     use bitcoin::hashes::{sha256, Hash};
 
     /// Digests some data through a single sha256.
-    pub fn sha256(b: &[u8]) -> [u8; 32] {
-        sha256::Hash::hash(&b).into_inner()
+    pub fn sha256(b: &[u8]) -> sha256::Hash {
+        sha256::Hash::hash(b)
     }
 }

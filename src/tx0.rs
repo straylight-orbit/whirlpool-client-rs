@@ -13,16 +13,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use bitcoin::util::bip32;
-use bitcoin::util::psbt;
-use bitcoin::{Address, Script, Transaction, TxIn, Witness};
+use std::str::FromStr;
+
+use bitcoin::bip32;
+use bitcoin::psbt;
+use bitcoin::script::PushBytesBuf;
+use bitcoin::ScriptBuf;
+use bitcoin::{Address, Transaction, TxIn, Witness};
 use serde::{Deserialize, Serialize};
 
 use crate::endpoints::Endpoints;
 use crate::pool::Pool;
+use crate::util::bip47::PaymentCode;
 use crate::util::fee::MinerFee;
 use crate::util::z85;
 use crate::util::{self, bip47, bip69};
+use crate::PoolId;
 use crate::{http, Input, OutputTemplate};
 
 /// The premix value of a TX0 transaction.
@@ -32,7 +38,7 @@ pub struct PremixValue(u64);
 impl PremixValue {
     pub fn new(pool: &Pool, fee_per_vbyte: f64) -> Self {
         let mix_tx_size = util::fee::estimate_mix_tx_size(pool.min_anonymity_set);
-        let fee = ((mix_tx_size / pool.min_must_mix as f64) * fee_per_vbyte as f64).ceil() as u64;
+        let fee = ((mix_tx_size / pool.min_must_mix as f64) * fee_per_vbyte).ceil() as u64;
         let premix_value = pool.denomination + fee;
 
         // Clamp the mix fee to the acceptable range for the pool.
@@ -146,29 +152,28 @@ impl Preview {
 
         // Create the OP_RETURN payload
         let first_input = inputs.first().ok_or(Error::InputListEmpty)?;
-        let mut fee_payload = z85::decode(&tx0_data.fee_payload_64).ok_or(Error::Z85)?;
-        fee_payload.resize(80, 0);
-
-        let fee_payment_code =
-            bip47::PaymentCode::try_from_str(&tx0_data.fee_payment_code).map_err(Error::BIP47)?;
+        let mut fee_payload = tx0_data.fee_payload_64.0;
 
         let blinding_sk =
             bitcoin::secp256k1::SecretKey::new(&mut bitcoin::secp256k1::rand::thread_rng());
-        let blinding_sk = bitcoin::PrivateKey::new(blinding_sk, fee_payment_code.0.network);
+        let blinding_sk =
+            bitcoin::PrivateKey::new(blinding_sk, tx0_data.fee_payment_code.0.network);
 
         mask_fee_payload(
             &mut fee_payload,
-            &fee_payment_code,
-            &first_input,
+            &tx0_data.fee_payment_code,
+            first_input,
             &blinding_sk,
         )?;
 
         // Store raw TxOuts and their PSBT counterparts here
         let mut tx_outputs = Vec::with_capacity(3 + self.n_premix_outputs as usize);
 
+        let fee_payload: PushBytesBuf = fee_payload.to_vec().try_into().expect("already truncated");
+
         // OP_RETURN for the fee payload
         let op_return = bitcoin::TxOut {
-            script_pubkey: bitcoin::Script::new_op_return(&fee_payload),
+            script_pubkey: bitcoin::ScriptBuf::new_op_return(&fee_payload),
             value: 0,
         };
         tx_outputs.push((op_return, None));
@@ -220,7 +225,7 @@ impl Preview {
 
         // BIP69 sort raw outs and their PSBT fields
         tx_outputs
-            .sort_by(|(a, _), (b, _)| bip69::ComparableTxOut(&a).cmp(&bip69::ComparableTxOut(&b)));
+            .sort_by(|(a, _), (b, _)| bip69::ComparableTxOut(a).cmp(&bip69::ComparableTxOut(b)));
 
         // Make inputs
         let raw_tx_ins = inputs
@@ -228,7 +233,7 @@ impl Preview {
             .map(|details| TxIn {
                 previous_output: details.outpoint,
                 sequence: bitcoin::Sequence::MAX,
-                script_sig: Script::new(),
+                script_sig: ScriptBuf::new(),
                 witness: Witness::new(),
             })
             .collect();
@@ -241,7 +246,7 @@ impl Preview {
         let unsigned_tx = Transaction {
             input: raw_tx_ins,
             output: raw_tx_outs,
-            lock_time: bitcoin::PackedLockTime::ZERO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
             version: 1,
         };
 
@@ -272,7 +277,7 @@ pub enum Error {
     BIP47(bip47::Error),
     Secp256k1(bitcoin::secp256k1::Error),
     Z85,
-    InvalidAddress(bitcoin::util::address::Error),
+    InvalidAddress(bitcoin::address::Error),
     Signing(Box<dyn std::error::Error + Send + Sync>),
     Blinding,
 }
@@ -280,6 +285,48 @@ pub enum Error {
 impl From<bip47::Error> for Error {
     fn from(error: bip47::Error) -> Self {
         Error::BIP47(error)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::InputListEmpty => write!(f, "Input list empty"),
+            Error::InputValueMismatch => write!(f, "Input value mismatch"),
+            Error::OutputAddressMismatch => write!(f, "Output address mismatch"),
+            Error::BIP32(inner) => write!(f, "BIP32: {}", inner),
+            Error::BIP47(inner) => write!(f, "BIP47: {}", inner),
+            Error::Secp256k1(inner) => write!(f, "Secp: {}", inner),
+            Error::Z85 => write!(f, "Z85 invalid"),
+            Error::InvalidAddress(inner) => write!(f, "Invalid address: {}", inner),
+            Error::Signing(inner) => write!(f, "Signing: {}", inner),
+            Error::Blinding => write!(f, "Blinding"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FeePayload([u8; 80]);
+
+impl From<Vec<u8>> for FeePayload {
+    fn from(mut value: Vec<u8>) -> Self {
+        value.resize(80, 0);
+        FeePayload(value.try_into().expect("80 bytes long"))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FeePayload {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: &str = serde::Deserialize::deserialize(deserializer)?;
+
+        use serde::de::Error as DeError;
+        z85::decode(s)
+            .ok_or(Error::Z85)
+            .map(From::from)
+            .map_err(DeError::custom)
     }
 }
 
@@ -292,7 +339,7 @@ fn mask_fee_payload(
     let notification_pubkey = fee_payment_code.notification_pubkey()?;
 
     let blinding_factor =
-        bip47::blinding_factor(&blinding_sk, &notification_pubkey, &input.outpoint)
+        bip47::blinding_factor(blinding_sk, &notification_pubkey, &input.outpoint)
             .map_err(Error::Secp256k1)?;
 
     data.iter_mut()
@@ -341,27 +388,31 @@ pub struct InputStructure {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tx0Data {
-    pub pool_id: String,
-    pub fee_payment_code: String,
+    pub pool_id: PoolId,
+    pub fee_payment_code: PaymentCode,
     pub fee_value: u64,
     pub fee_change: u64,
     pub fee_discount_percent: u8,
     pub message: Option<String>,
-    pub fee_payload_64: String,
+    pub fee_payload_64: FeePayload,
+    #[serde(deserialize_with = "deserialize_opt_address")]
     pub fee_address: Option<Address>,
     pub fee_output_signature: String,
+}
+
+impl Tx0Data {
+    pub fn coordinator_fee(&self) -> CoordinatorFee {
+        match &self.fee_address {
+            Some(addr) => CoordinatorFee::Coordinator(self.fee_value, addr.clone()),
+            None => CoordinatorFee::DepositBack(self.fee_change),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tx0DataResponse {
     pub tx0_datas: Vec<Tx0Data>,
-}
-
-impl From<Tx0DataResponse> for Vec<Tx0Data> {
-    fn from(response: Tx0DataResponse) -> Self {
-        response.tx0_datas
-    }
 }
 
 impl Tx0Data {
@@ -386,13 +437,6 @@ impl Tx0Data {
             de_type: std::marker::PhantomData,
         }
     }
-
-    pub fn coordinator_fee(&self) -> CoordinatorFee {
-        match &self.fee_address {
-            Some(addr) => CoordinatorFee::Coordinator(self.fee_value, addr.clone()),
-            None => CoordinatorFee::DepositBack(self.fee_change),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,7 +458,7 @@ pub enum Tx0PushResponse {
 pub fn push_tx0_request(
     endpoints: &Endpoints,
     tx: &bitcoin::Transaction,
-    pool_id: String,
+    pool_id: &PoolId,
 ) -> http::Request<Tx0PushResponse> {
     use bitcoin::consensus::Encodable;
     let mut tx_bytes = Vec::new();
@@ -422,14 +466,14 @@ pub fn push_tx0_request(
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    struct RequestPayload {
+    struct RequestPayload<'a> {
         tx64: String,
-        pool_id: String,
+        pool_id: &'a str,
     }
 
     let request = RequestPayload {
         tx64: z85::encode(tx_bytes),
-        pool_id,
+        pool_id: pool_id.as_ref(),
     };
 
     http::Request {
@@ -438,6 +482,23 @@ pub fn push_tx0_request(
         body: Some(http::Body::json(&request)),
         alt_id: false,
         de_type: std::marker::PhantomData,
+    }
+}
+
+fn deserialize_opt_address<'de, D>(deserializer: D) -> Result<Option<Address>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let s: Option<&str> = serde::de::Deserialize::deserialize(deserializer)?;
+
+    match s {
+        Some(s) => Some(
+            Address::from_str(s)
+                .map(|a| a.assume_checked())
+                .map_err(serde::de::Error::custom),
+        )
+        .transpose(),
+        None => Ok(None),
     }
 }
 
@@ -580,7 +641,7 @@ mod test {
     #[test]
     fn premix_value() {
         let pool = Pool {
-            id: "0.01btc".to_string(),
+            id: "0.01btc".into(),
             denomination: 1_000_000,
             fee_value: 5000,
             must_mix_balance_min: 1_000_170,
@@ -639,7 +700,11 @@ mod test {
             false => (
                 45000,
                 0,
-                Some(Address::from_str("1BvQpuGDq654ZMhsQKT3iQVTgxcRdCCfrR").unwrap()),
+                Some(
+                    Address::from_str("1BvQpuGDq654ZMhsQKT3iQVTgxcRdCCfrR")
+                        .unwrap()
+                        .assume_checked(),
+                ),
             ),
         };
 
@@ -665,9 +730,9 @@ mod test {
             fee_value,
             fee_change,
             fee_discount_percent: 0,
-            fee_payload_64: "123.123.123".to_string(),
-            fee_payment_code: "PM8TJXp19gCE6hQzqRi719FGJzF6AreRwvoQKLRnQ7dpgaakakFns22jHUqhtPQWmfevPQRCyfFbdDrKvrfw9oZv5PjaCerQMa3BKkPyUf9yN1CDR3w6".to_string(),
-            pool_id: String::new(),
+            fee_payload_64: z85::decode("123.123.123").unwrap().into(),
+            fee_payment_code: PaymentCode::try_from_str("PM8TJXp19gCE6hQzqRi719FGJzF6AreRwvoQKLRnQ7dpgaakakFns22jHUqhtPQWmfevPQRCyfFbdDrKvrfw9oZv5PjaCerQMa3BKkPyUf9yN1CDR3w6").unwrap(),
+            pool_id: "".into(),
             message: None,
             fee_output_signature: "II4wrLMNJxchyrcu0aVB8FbrCFIO6YSKpZW5qfc1DO7NCkl4hihArn3aLcP0ylN5Z/UDbxWwzd4l9huO1hcsK/E=".to_string(),
         };
@@ -690,7 +755,10 @@ mod test {
         let miner_fee = preview.miner_fee;
         let change = preview.change;
 
-        let change_addr = Address::from_str("1EgPiHUdLupfiUPg7ztJJzteTDcDvRJE3s").unwrap();
+        let change_addr = Address::from_str("1EgPiHUdLupfiUPg7ztJJzteTDcDvRJE3s")
+            .unwrap()
+            .assume_checked();
+
         let address_bank: Vec<_> = [
             "174WD5hStuHkywyonMf8wzGQLaj7RJp6M9",
             "1EuZwtFs6WNQRrSECbxTNFz3XkNfxUgygS",
@@ -706,7 +774,7 @@ mod test {
             "1KmhCoxmD4mW7MKAGwTqcqpACoZXjyjQNi",
         ]
         .iter()
-        .map(|a| Address::from_str(a).unwrap())
+        .map(|a| Address::from_str(a).unwrap().assume_checked())
         .collect();
 
         let mut next_addr = 0_usize;
@@ -716,7 +784,7 @@ mod test {
                     OutputTemplate {
                         address: change_addr.clone(),
                         fields: psbt::Output {
-                            redeem_script: Some(Script::new_op_return(&[0xFF])),
+                            redeem_script: Some(ScriptBuf::new_op_return(&[0xFF])),
                             ..Default::default()
                         },
                     }
@@ -747,9 +815,10 @@ mod test {
             .zip(psbt.inputs.iter())
             .enumerate()
         {
-            let expected_marker = raw_in.previous_output.txid.as_hash().into_inner();
+            let expected_marker = raw_in.previous_output.txid.to_raw_hash().to_byte_array();
+
             assert_eq!(
-                Script::new_op_return(&expected_marker),
+                ScriptBuf::new_op_return(&expected_marker),
                 psbt_in.witness_utxo.as_ref().unwrap().script_pubkey,
             );
 
@@ -795,7 +864,10 @@ mod test {
             } else if i == 2 {
                 assert_eq!(raw_out.value, change);
                 assert_eq!(raw_out.script_pubkey, change_addr.script_pubkey());
-                assert_eq!(psbt_out.redeem_script, Some(Script::new_op_return(&[0xFF])));
+                assert_eq!(
+                    psbt_out.redeem_script,
+                    Some(ScriptBuf::new_op_return(&[0xFF]))
+                );
             } else {
                 assert_eq!(raw_out.value, premix_value);
                 assert_eq!(
@@ -812,9 +884,10 @@ mod test {
         // this wouldn't make any sense in reality, but we just want to check
         // that our PSBT is constructed properly
         let outpoint = OutPoint::from_str(outpoint).unwrap();
+        let op_return = PushBytesBuf::try_from(outpoint.txid.as_byte_array()).unwrap();
         let prev_txout = TxOut {
             value,
-            script_pubkey: Script::new_op_return(outpoint.txid.as_hash().as_inner()),
+            script_pubkey: ScriptBuf::new_op_return(&op_return),
         };
         Input {
             outpoint,

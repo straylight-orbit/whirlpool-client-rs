@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 const fn base(onion: bool, mainnet: bool) -> &'static str {
+    #[allow(clippy::collapsible_else_if)]
     if onion {
         if mainnet {
             "udkmfc5j6zvv3ysavbrwzhwji4hpyfe3apqa6yst7c7l32mygf65g4ad.onion:80"

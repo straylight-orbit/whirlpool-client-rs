@@ -16,6 +16,7 @@
 use std::cmp::Ordering;
 
 use bitcoin::blockdata::transaction::{TxIn, TxOut};
+use bitcoin::hashes::Hash;
 use bitcoin::OutPoint;
 
 /// Lexicographically comparable wrapper for an outpoint according to BIP69.
@@ -24,7 +25,14 @@ pub struct ComparableOutpoint<'a>(pub &'a OutPoint);
 
 impl<'a> std::cmp::Ord for ComparableOutpoint<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.0.txid.iter().rev().cmp(other.0.txid.iter().rev()) {
+        match self
+            .0
+            .txid
+            .to_byte_array()
+            .iter()
+            .rev()
+            .cmp(other.0.txid.to_byte_array().iter().rev())
+        {
             Ordering::Less => Ordering::Less,
             Ordering::Greater => Ordering::Greater,
             Ordering::Equal => self.0.vout.cmp(&other.0.vout),
@@ -55,15 +63,15 @@ pub fn sort_inputs(inputs: &mut [TxIn]) {
 
 /// Lexicographically sorts a vector of transaction outputs according to BIP69.
 pub fn sort_outputs(outputs: &mut [TxOut]) {
-    outputs.sort_by(|a, b| ComparableTxOut(&a).cmp(&ComparableTxOut(&b)))
+    outputs.sort_by(|a, b| ComparableTxOut(a).cmp(&ComparableTxOut(b)))
 }
 
 #[cfg(test)]
 mod test {
     use std::str::FromStr;
 
-    use bitcoin::blockdata::script::Script;
     use bitcoin::blockdata::transaction::{OutPoint, TxIn, TxOut};
+    use bitcoin::ScriptBuf;
 
     use super::{sort_inputs, sort_outputs};
 
@@ -223,7 +231,7 @@ mod test {
             .into_iter()
             .map(|(value, scriptpubkey)| TxOut {
                 value: value.parse().unwrap(),
-                script_pubkey: Script::from_str(scriptpubkey).unwrap(),
+                script_pubkey: ScriptBuf::from_hex(&scriptpubkey).unwrap(),
             })
             .collect();
 
@@ -233,7 +241,10 @@ mod test {
 
         for (actual, expected) in outputs.iter().zip(expected_sorted) {
             assert_eq!(actual.value, u64::from_str(expected.0).unwrap());
-            assert_eq!(actual.script_pubkey, Script::from_str(expected.1).unwrap());
+            assert_eq!(
+                actual.script_pubkey,
+                ScriptBuf::from_hex(expected.1).unwrap()
+            );
         }
     }
 }

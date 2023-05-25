@@ -15,13 +15,15 @@
 
 use std::collections::HashSet;
 
-use bitcoin::hashes::hex::ToHex;
-use bitcoin::util::psbt::PartiallySignedTransaction;
+use bitcoin::hashes::Hash;
+use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::{Address, OutPoint, Witness};
+
+use hex::ToHex;
 
 use crate::util;
 use crate::Signer;
-use crate::{Input, OutputTemplate};
+use crate::{Input, OutputTemplate, PoolId};
 
 /// Parameters required in order to start a mix.
 #[derive(Debug)]
@@ -33,7 +35,7 @@ pub struct Params {
     /// The destination output to mix to.
     pub destination: OutputTemplate,
     /// The pool to join.
-    pub pool_id: String,
+    pub pool_id: PoolId,
     /// The pool denomination in sats.
     pub denomination: u64,
     /// Some entropy that has to be unique per seed. This is to prevent multiple wallet
@@ -85,7 +87,7 @@ impl Mix {
                 self.change_state(State::Subscribe);
 
                 let message = StreamRequest::SubscribePool {
-                    pool_id: self.params.pool_id.clone(),
+                    pool_id: self.params.pool_id.to_string(),
                 };
 
                 Ok(Event::StandardRequest(message))
@@ -104,12 +106,12 @@ impl Mix {
                 }
 
                 let message = StreamRequest::RegisterInput {
-                    pool_id: self.params.pool_id.clone(),
+                    pool_id: self.params.pool_id.to_string(),
                     utxo: self.params.input.outpoint,
                     signature: self
                         .params
                         .signer
-                        .sign_message(&self.params.input, &self.params.pool_id)
+                        .sign_message(&self.params.input, self.params.pool_id.as_ref())
                         .map_err(Error::Signing)?,
                     remixer: self.params.denomination == self.params.input.prev_txout.value,
                     block_height: self.params.block_height,
@@ -125,13 +127,14 @@ impl Mix {
                 CoordinatorResponse::ConfirmInputNotification { mix_id, public_key },
                 State::RegisterInput | State::ConfirmInput { .. },
             ) => {
-                let bordereau = Bordereau::new();
+                let bordereau = Bordereau::default();
                 let blinded = public_key.blind(&bordereau, &blinding_options())?;
 
                 let user_hash = util::hashes::sha256(
                     &[&self.params.pre_user_hash.0, mix_id.as_bytes()].concat(),
                 )
-                .to_hex();
+                .to_byte_array()
+                .encode_hex();
 
                 let message = StreamRequest::ConfirmInput {
                     blinded_destination: blinded.blind_msg,
@@ -164,7 +167,7 @@ impl Mix {
 
                 let signature = public_key.finalize(
                     &blind_signature,
-                    &blinding_secret,
+                    blinding_secret,
                     bordereau,
                     &blinding_options(),
                 )?;
@@ -221,7 +224,7 @@ impl Mix {
                     &self.params.destination.address,
                     &self.params.input,
                     self.params.denomination,
-                    &inputs_hash,
+                    inputs_hash,
                 )
                 .map_err(Error::MixTransaction)?;
 
@@ -260,7 +263,7 @@ impl Mix {
             (CoordinatorResponse::MixSuccessful { mix_id }, State::Sign(txid)) => {
                 self.verify_mix_id(&mix_id)?;
 
-                let event = Event::Success(txid.clone());
+                let event = Event::Success(*txid);
                 self.change_state(State::Success);
                 Ok(event)
             }
@@ -342,7 +345,7 @@ impl From<Vec<u8>> for PreUserHash {
 impl std::fmt::Debug for PreUserHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PreUserHash")
-            .field(&self.0.to_hex())
+            .field(&self.0.encode_hex::<String>())
             .finish()
     }
 }
@@ -351,8 +354,8 @@ impl std::fmt::Debug for PreUserHash {
 #[derive(Debug, Clone)]
 pub struct Bordereau([u8; 30]);
 
-impl Bordereau {
-    pub fn new() -> Self {
+impl Default for Bordereau {
+    fn default() -> Self {
         use rand::Rng;
         let mut bordereau = [0_u8; 30];
         rand::thread_rng().fill(&mut bordereau);
@@ -546,7 +549,7 @@ fn verify_mix_tx(
 ) -> Result<(usize, usize), MixTxError> {
     // 1. verify that the inputs hash matches
     let input_refs: Vec<_> = tx.input.iter().map(|txin| txin.previous_output).collect();
-    if !verify_inputs_hash(&input_refs, &inputs_hash) {
+    if !verify_inputs_hash(&input_refs, inputs_hash) {
         return Err(MixTxError::InputsHashMismatch);
     }
 
@@ -611,10 +614,8 @@ fn verify_inputs_hash(outpoints: &[OutPoint], inputs_hash: &str) -> bool {
 
     let preimage = values.join(";");
 
-    use bitcoin::hashes::Hash;
-
     let hash = bitcoin::hashes::sha512::Hash::hash(preimage.as_bytes());
-    hash.to_hex() == inputs_hash
+    hex::encode(hash) == inputs_hash
 }
 
 #[derive(Debug)]
@@ -635,9 +636,10 @@ mod test {
     use std::str::FromStr;
 
     use super::*;
-    use bitcoin::util::psbt;
-    use bitcoin::{Address, Script, Transaction, TxIn, TxOut};
-    use bitcoin::{PackedLockTime, Witness};
+    use bitcoin::absolute::LockTime;
+    use bitcoin::psbt;
+    use bitcoin::Witness;
+    use bitcoin::{Address, Transaction, TxIn, TxOut};
 
     #[derive(Debug)]
     struct MockSigner;
@@ -649,7 +651,7 @@ mod test {
         ) -> Result<bitcoin::Transaction, Box<dyn std::error::Error + Send + Sync>> {
             for input in &mut tx.inputs {
                 if input.witness_utxo.is_some() {
-                    input.final_script_witness = Some(Witness::from_vec(vec![vec![0x00]]));
+                    input.final_script_witness = Some(Witness::from_slice(&[&[0x00]]));
                     break;
                 }
             }
@@ -671,7 +673,7 @@ mod test {
             input: input(),
             signer: signer(),
             destination: output_template(),
-            pool_id: POOL_ID.to_owned(),
+            pool_id: POOL_ID.into(),
             denomination: 1_000_000,
             network: bitcoin::Network::Testnet,
             pre_user_hash: PreUserHash(vec![]),
@@ -779,7 +781,7 @@ mod test {
             input: input(),
             signer: signer(),
             destination: output_template(),
-            pool_id: POOL_ID.to_owned(),
+            pool_id: POOL_ID.into(),
             denomination: 1_000_000,
             network: bitcoin::Network::Testnet,
             pre_user_hash: PreUserHash(vec![]),
@@ -898,7 +900,7 @@ mod test {
             .unwrap(),
             prev_txout: TxOut {
                 value: 1_000_200,
-                script_pubkey: Script::new(),
+                script_pubkey: Default::default(),
             },
             fields: psbt::Input {
                 // just use this to mark our own input so our fake signer can find it
@@ -915,13 +917,13 @@ mod test {
     fn transaction() -> Transaction {
         // valid unsigned 2-in 2-out mix transaction where we are one participant
         Transaction {
-            lock_time: PackedLockTime::ZERO,
+            lock_time: LockTime::ZERO,
             version: 2,
             input: vec![
                 // us
                 TxIn {
                     previous_output: input().outpoint,
-                    script_sig: Script::default(),
+                    script_sig: Default::default(),
                     sequence: bitcoin::Sequence::MAX,
                     witness: Witness::new(),
                 },
@@ -931,7 +933,7 @@ mod test {
                         "35288d269cee1941eaebb2ea85e32b42cdb2b04284a56d8b14dcc3f5c65d6055:0",
                     )
                     .unwrap(),
-                    script_sig: Script::default(),
+                    script_sig: Default::default(),
                     sequence: bitcoin::Sequence::MAX,
                     witness: Witness::new(),
                 },
@@ -947,6 +949,7 @@ mod test {
                     value: 1_000_000,
                     script_pubkey: Address::from_str("tb1q765gfuv0f4l83fqk0sl9vaeu8tjcuqtyrrduyv")
                         .unwrap()
+                        .assume_checked()
                         .script_pubkey(),
                 },
             ],
@@ -955,7 +958,9 @@ mod test {
 
     fn output_template() -> OutputTemplate {
         OutputTemplate {
-            address: Address::from_str("tb1qjara0278vrsr8gvaga7jpy2c9amtgvytr44xym").unwrap(),
+            address: Address::from_str("tb1qjara0278vrsr8gvaga7jpy2c9amtgvytr44xym")
+                .unwrap()
+                .assume_checked(),
             fields: psbt::Output::default(),
         }
     }

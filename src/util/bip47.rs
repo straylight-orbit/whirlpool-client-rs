@@ -15,20 +15,21 @@
 
 //! Rudimentary subset of the BIP47 standard.
 
+use bitcoin::base58;
+use bitcoin::bip32::{self, ChainCode, ChildNumber, ExtendedPubKey};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::util::base58;
-use bitcoin::util::bip32::{self, ChainCode, ChildNumber, ExtendedPubKey};
 use bitcoin::{secp256k1, PrivateKey, PublicKey};
 
 const PAYMENT_CODE_BIN_LENGTH: usize = 80;
 const LETTER_P: u8 = 0x47;
 
+#[derive(Debug)]
 pub struct PaymentCode(pub ExtendedPubKey);
 
 impl PaymentCode {
     pub fn try_from_str(value: &str) -> Result<Self, Error> {
-        let payment_code = base58::from_check(value).map_err(Error::Base58)?;
+        let payment_code = base58::decode_check(value).map_err(Error::Base58)?;
 
         if payment_code.first() != Some(&LETTER_P) {
             return Err(Error::Format("Incorrect version bytes"));
@@ -43,7 +44,11 @@ impl PaymentCode {
         }
 
         let public_key = PublicKey::from_slice(&payment_code[2..35])?.inner;
-        let chain_code = ChainCode::from(&payment_code[35..67]);
+        let chain_code = ChainCode::from(
+            &payment_code[35..67]
+                .try_into()
+                .map_err(|_| Error::Format("Unable to extract chaincode"))?,
+        );
 
         let network = bitcoin::Network::Bitcoin;
 
@@ -76,7 +81,7 @@ pub fn blinding_factor(
     let pk = pk.inner.mul_tweak(&Secp256k1::new(), &sk.inner.into())?;
 
     let mut encoded_utxo = Vec::with_capacity(36);
-    encoded_utxo.extend_from_slice(&utxo.txid);
+    encoded_utxo.extend_from_slice(utxo.txid.as_byte_array().as_slice());
     encoded_utxo.extend_from_slice(&u32_to_le_bytes(utxo.vout));
 
     use bitcoin::hashes::{self, sha512, HashEngine, Hmac};
@@ -84,7 +89,7 @@ pub fn blinding_factor(
     hmac.input(&pk.serialize()[1..]);
     let hash = Hmac::<sha512::Hash>::from_engine(hmac);
 
-    Ok(hash.into_inner())
+    Ok(hash.to_byte_array().to_owned())
 }
 
 fn u32_to_le_bytes(x: u32) -> [u8; 4] {
@@ -101,7 +106,7 @@ pub enum Error {
     Base58(base58::Error),
     Bip32(bip32::Error),
     Ecdsa(secp256k1::Error),
-    Key(bitcoin::util::key::Error),
+    Key(bitcoin::key::Error),
 }
 
 impl From<bip32::Error> for Error {
@@ -116,9 +121,33 @@ impl From<secp256k1::Error> for Error {
     }
 }
 
-impl From<bitcoin::util::key::Error> for Error {
-    fn from(error: bitcoin::util::key::Error) -> Self {
+impl From<bitcoin::key::Error> for Error {
+    fn from(error: bitcoin::key::Error) -> Self {
         Error::Key(error)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Format(inner) => write!(f, "Format: {}", inner),
+            Error::Base58(inner) => write!(f, "Base58: {}", inner),
+            Error::Bip32(inner) => write!(f, "BIP32: {}", inner),
+            Error::Ecdsa(inner) => write!(f, "Ecdsa: {}", inner),
+            Error::Key(inner) => write!(f, "Key: {}", inner),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PaymentCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s: &str = serde::Deserialize::deserialize(deserializer)?;
+
+        use serde::de::Error;
+        PaymentCode::try_from_str(s).map_err(D::Error::custom)
     }
 }
 
@@ -135,8 +164,9 @@ mod tests {
         let code = "PM8TJTLJbPRGxSbc8EJi42Wrr6QbNSaSSVJ5Y3E4pbCYiTHUskHg13935Ubb7q8tx9GVbh2UuRnBc3WSyJHhUrw8KhprKnn9eDznYGieTzFcwQRya4GA";
         let code = PaymentCode::try_from_str(code).unwrap();
 
-        let expected_notification_address =
-            Address::from_str("1JDdmqFLhpzcUwPeinhJbUPw4Co3aWLyzW").unwrap();
+        let expected_notification_address = Address::from_str("1JDdmqFLhpzcUwPeinhJbUPw4Co3aWLyzW")
+            .unwrap()
+            .assume_checked();
         let actual_notification_address =
             Address::p2pkh(&code.notification_pubkey().unwrap(), code.0.network);
 

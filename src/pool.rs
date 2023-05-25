@@ -17,12 +17,35 @@ use serde::{self, Deserialize};
 
 use crate::{endpoints::Endpoints, http};
 
+/// Represents the unique identifier of a pool.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolId(String);
+
+#[cfg(test)]
+impl From<&str> for PoolId {
+    fn from(value: &str) -> Self {
+        PoolId(value.to_owned())
+    }
+}
+
+impl AsRef<str> for PoolId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PoolId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Information about a particular pool as returned by the coordinator.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pool {
     #[serde(rename = "poolId")]
-    pub id: String,
+    pub id: PoolId,
     pub denomination: u64,
     pub fee_value: u64,
     pub must_mix_balance_min: u64,

@@ -60,7 +60,7 @@ pub fn decode<T: AsRef<str>>(s: T) -> Option<Vec<u8>> {
                     ret[index] = ((value / div) % 256) as u8;
                     index += 1;
                 }
-                div = div / 256;
+                div /= 256;
             }
             value = 0;
         }
@@ -79,12 +79,7 @@ pub fn encode<T: AsRef<[u8]>>(bytes: T) -> String {
 
     for i in 0..(bytes.len() + padding) {
         let is_padding = i >= bytes.len();
-        value = value * 256
-            + if is_padding {
-                0
-            } else {
-                (bytes[i] & 0xFF) as u32
-            };
+        value = value * 256 + if is_padding { 0 } else { bytes[i] as u32 };
 
         if (i + 1) % 4 == 0 {
             let mut div: u32 = 85 * 85 * 85 * 85;
@@ -94,7 +89,7 @@ pub fn encode<T: AsRef<[u8]>>(bytes: T) -> String {
                     let code = (value / div) % 85;
                     ret.push(ENCODERS[code as usize]);
                 }
-                div = div / 85;
+                div /= 85;
             }
             value = 0;
         }

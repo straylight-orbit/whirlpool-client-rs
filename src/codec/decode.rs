@@ -26,7 +26,7 @@ impl TryFrom<&[u8]> for CoordinatorResponse {
     type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Error> {
-        let frame = ServerFrame::parse(&data)?;
+        let frame = ServerFrame::parse(data)?;
 
         match frame {
             ServerFrame::Connected => Ok(CoordinatorResponse::Connected),
