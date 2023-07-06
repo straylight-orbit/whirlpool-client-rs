@@ -128,7 +128,12 @@ impl Mix {
                 State::RegisterInput | State::ConfirmInput { .. },
             ) => {
                 let bordereau = Bordereau::default();
-                let blinded = public_key.blind(&bordereau, &blinding_options())?;
+                let blinded = public_key.blind(
+                    &mut rand::thread_rng(),
+                    &bordereau,
+                    false,
+                    &blinding_options(),
+                )?;
 
                 let user_hash = util::hashes::sha256(
                     &[&self.params.pre_user_hash.0, mix_id.as_bytes()].concat(),
@@ -168,6 +173,7 @@ impl Mix {
                 let signature = public_key.finalize(
                     &blind_signature,
                     blinding_secret,
+                    None,
                     bordereau,
                     &blinding_options(),
                 )?;
@@ -969,7 +975,8 @@ mod test {
         blinded: blind_rsa_signatures::BlindedMessage,
     ) -> blind_rsa_signatures::BlindSignature {
         let (sk, _) = rsa_keys();
-        sk.blind_sign(blinded, &blinding_options()).unwrap()
+        sk.blind_sign(&mut rand::thread_rng(), blinded, &blinding_options())
+            .unwrap()
     }
 
     fn rsa_keys() -> (

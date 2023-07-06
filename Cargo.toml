@@ -1,6 +1,6 @@
 [package]
 name = "whirlpool-client"
-version = "2.0.0"
+version = "2.0.1"
 authors = ["Straylight <straylight_orbit@protonmail.com>"]
 description = "Whirlpool Coinjoin Client"
 license = "GPL-3.0-only"
@@ -14,7 +14,7 @@ rustls-native-certs = ["tungstenite/rustls-tls-native-roots", "ureq/native-certs
 
 [dependencies]
 bitcoin = { version = "0.30.0", features = ["base64", "rand", "serde"] }
-blind-rsa-signatures = "0.12.6"
+blind-rsa-signatures = "0.15.0"
 hex = "0.4.3"
 log = "0.4.17"
 port_check = "0.1.5"

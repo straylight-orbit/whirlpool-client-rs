@@ -233,8 +233,6 @@ pub mod client {
         tor_config: TorConfig,
         notify: F,
     ) -> Result<bitcoin::Txid, Error> {
-        log::info!("*** if you find this project useful, please consider donating: bc1qdqyddz0fh8d24gkwhuu5apcf8uzk4nyxw2035a ***");
-
         if !port_check::is_port_reachable((tor_config.host, tor_config.port)) {
             return Err(Error::TorMissing);
         }
@@ -310,7 +308,7 @@ pub mod client {
 
     /// Used to communicate status information when in a context where a mix handle
     /// cannot be accessed directly (such as in a multithreaded environment).
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Info {
         /// The mix is in progress.
         Working {
@@ -332,7 +330,7 @@ pub mod client {
     }
 
     /// Invidividual mix steps for informational purposes.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Step {
         WaitingForCoordinator,
         Connecting,

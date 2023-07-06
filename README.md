@@ -18,7 +18,7 @@ is monitored, you will be exposed as a Whirlpool user.
 ### PGP Signatures
 
 All commits and releases starting from `v2.0.0` are signed by Straylight using
-[this key](signing_key.gpg.asc) ([mirror](https://github.com/straylight-orbit.gpg)). Used strictly
+[these keys](signing_key.gpg.asc) ([mirror](https://github.com/straylight-orbit.gpg)). Used strictly
 for signing, not email encryption.
 
 If you are not using Straylight's version, you are not using the original version of this library so
@@ -45,11 +45,6 @@ The crate exposes the following feature flags:
 * `rustls-native-certs` - Rust TLS implementation using the platform's native certificate store
 
 These should be used in a mutually exclusive (not additive) fashion.
-
-## Donations
-
-If you find this library useful, donations are greatly appreciated. Our donation address is
-`bc1qdqyddz0fh8d24gkwhuu5apcf8uzk4nyxw2035a`
 
 ## License
 
